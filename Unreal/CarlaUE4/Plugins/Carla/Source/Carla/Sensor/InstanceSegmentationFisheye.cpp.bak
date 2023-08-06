@@ -1,0 +1,149 @@
+// Copyright (c) 2017 Computer Vision Center (CVC) at the Universitat Autonoma
+// de Barcelona (UAB).
+//
+// This work is licensed under the terms of the MIT license.
+// For a copy, see <https://opensource.org/licenses/MIT>.
+
+#include "Carla.h"
+#include "Carla/Sensor/InstanceSegmentationFisheye.h"
+#include "Carla/Game/TaggedComponent.h"
+
+#include "Carla/Sensor/PixelReader.h"
+
+//#include "Components/SceneCaptureComponent2D.h"
+#include "Components/SceneCaptureComponentCube.h"
+
+#include "CoreGlobals.h"
+#include "Engine/TextureRenderTargetCube.h"
+#include "Runtime/ImageWriteQueue/Public/ImagePixelData.h"
+#include "CubemapUnwrapUtils.h"
+
+#include <compiler/disable-ue4-macros.h>
+#include <carla/Buffer.h>
+#include <carla/sensor/SensorRegistry.h>
+#include <compiler/enable-ue4-macros.h>
+
+FActorDefinition AInstanceSegmentationFisheye::GetSensorDefinition()
+{
+    auto Definition = UActorBlueprintFunctionLibrary::MakeGenericSensorDefinition(
+            TEXT("camera"),
+            TEXT("instance_segmentation_fisheye"));
+
+    FActorVariation XSize;
+    XSize.Id = TEXT("x_size");
+    XSize.Type = EActorAttributeType::Float;
+    XSize.RecommendedValues = { TEXT("1000.0") };
+    XSize.bRestrictToRecommended = false;
+
+    FActorVariation YSize;
+    YSize.Id = TEXT("y_size");
+    YSize.Type = EActorAttributeType::Float;
+    YSize.RecommendedValues = { TEXT("900.0") };
+    YSize.bRestrictToRecommended = false;
+
+    FActorVariation MaxAngle;
+    MaxAngle.Id = TEXT("max_angle");
+    MaxAngle.Type = EActorAttributeType::Float;
+    MaxAngle.RecommendedValues = { TEXT("200.0") };
+    MaxAngle.bRestrictToRecommended = false;
+
+    FActorVariation Fx;
+    Fx.Id = TEXT("f_x");
+    Fx.Type = EActorAttributeType::Float;
+    Fx.RecommendedValues = { TEXT("300.0") };
+    Fx.bRestrictToRecommended = false;
+
+    FActorVariation Fy;
+    Fy.Id = TEXT("f_y");
+    Fy.Type = EActorAttributeType::Float;
+    Fy.RecommendedValues = { TEXT("300.0") };
+    Fy.bRestrictToRecommended = false;
+
+    FActorVariation Cx;
+    Cx.Id = TEXT("c_x");
+    Cx.Type = EActorAttributeType::Float;
+    Cx.RecommendedValues = { TEXT("600.0") };
+    Cx.bRestrictToRecommended = false;
+
+    FActorVariation Cy;
+    Cy.Id = TEXT("c_y");
+    Cy.Type = EActorAttributeType::Float;
+    Cy.RecommendedValues = { TEXT("400.0") };
+    Cy.bRestrictToRecommended = false;
+
+    FActorVariation D1;
+    D1.Id = TEXT("d_1");
+    D1.Type = EActorAttributeType::Float;
+    D1.RecommendedValues = { TEXT("0.0") };
+    D1.bRestrictToRecommended = false;
+
+    FActorVariation D2;
+    D2.Id = TEXT("d_2");
+    D2.Type = EActorAttributeType::Float;
+    D2.RecommendedValues = { TEXT("0.0") };
+    D2.bRestrictToRecommended = false;
+
+    FActorVariation D3;
+    D3.Id = TEXT("d_3");
+    D3.Type = EActorAttributeType::Float;
+    D3.RecommendedValues = { TEXT("0.0") };
+    D3.bRestrictToRecommended = false;
+
+    FActorVariation D4;
+    D4.Id = TEXT("d_4");
+    D4.Type = EActorAttributeType::Float;
+    D4.RecommendedValues = { TEXT("0.0") };
+    D4.bRestrictToRecommended = false;
+
+    Definition.Variations.Append({ XSize, YSize, MaxAngle, Fx, Fy, Cx, Cy, D1, D2, D3, D4});
+
+    return Definition;
+}
+
+AInstanceSegmentationFisheye::AInstanceSegmentationFisheye(const FObjectInitializer &ObjectInitializer)
+        : Super(ObjectInitializer)
+{
+//   AddPostProcessingMaterial(TEXT("Material'/Carla/PostProcessingMaterials/PhysicLensDistortion.PhysicLensDistortion'"));
+}
+
+
+void AInstanceSegmentationFisheye::SetUpSceneCaptureComponentCube(USceneCaptureComponentCube &SceneCapture)
+{
+    Super::SetUpSceneCaptureComponentCube(SceneCapture);
+
+    ApplyViewMode(VMI_Unlit, true, SceneCapture.ShowFlags);
+
+    SceneCapture.ShowFlags.SetNotDrawTaggedComponents(false); // TaggedComponent detects this and sets view relevance for proxy material
+
+    SceneCapture.ShowFlags.SetAtmosphere(false);
+
+    SceneCapture.PrimitiveRenderMode = ESceneCapturePrimitiveRenderMode::PRM_UseShowOnlyList;
+
+    TArray<UObject *> TaggedComponents;
+    GetObjectsOfClass(UTaggedComponent::StaticClass(), TaggedComponents, false, EObjectFlags::RF_ClassDefaultObject, EInternalObjectFlags::AllFlags);
+
+    TArray<UPrimitiveComponent *> ShowOnlyComponents;
+    for (UObject *Object : TaggedComponents)
+    {
+        UPrimitiveComponent *Component = Cast<UPrimitiveComponent>(Object);
+        SceneCapture.ShowOnlyComponents.Emplace(Component);
+    }
+}
+
+void AInstanceSegmentationFisheye::PostPhysTick(UWorld *World, ELevelTick TickType, float DeltaSeconds)
+// Add the view information every tick. It's only used for one tick and then removed by the streamer.
+{
+    TRACE_CPUPROFILER_EVENT_SCOPE(AInstanceSegmentationFisheye::PostPhysTick);
+
+    USceneCaptureComponentCube* SceneCapture = GetCaptureComponentCube();
+    TArray<UObject *> TaggedComponents;
+    GetObjectsOfClass(UTaggedComponent::StaticClass(), TaggedComponents, false, EObjectFlags::RF_ClassDefaultObject, EInternalObjectFlags::AllFlags);
+
+    SceneCapture->ClearShowOnlyComponents();
+    for (UObject *Object : TaggedComponents) {
+        UPrimitiveComponent *Component = Cast<UPrimitiveComponent>(Object);
+        SceneCapture->ShowOnlyComponents.Emplace(Component);
+    }
+
+    SendPixelsInRenderThread(*this, MaxAngle, XSize, YSize, Fx, Fy, Cx, Cy, D1, D2, D3, D4);
+}
